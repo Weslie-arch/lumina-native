@@ -2,6 +2,32 @@ import Foundation
 import SwiftUI
 import ActivityKit
 
+/// Activity 不是 Sendable，直接跨 actor 传会触发 Swift 6 的 data race 检查。
+/// 用一个盒子把它关起来，主 App 只跟盒子打交道。
+final class ActivityBox: @unchecked Sendable {
+    private var activity: Activity<LuminaAttributes>?
+
+    func start() {
+        guard activity == nil else { return }
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        let st = LuminaAttributes.ContentState(status: "待命", detail: "打开 Lumina 看消息",
+                                               unread: 0, pending: 0, updatedAt: Date())
+        activity = try? Activity<LuminaAttributes>.request(
+            attributes: LuminaAttributes(),
+            content: ActivityContent(state: st, staleDate: nil),
+            pushType: nil)
+    }
+
+    func update(_ st: LuminaAttributes.ContentState) async {
+        await activity?.update(ActivityContent(state: st, staleDate: Date().addingTimeInterval(900)))
+    }
+
+    func stop() async {
+        await activity?.end(nil, dismissalPolicy: .immediate)
+        activity = nil
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
 
@@ -21,7 +47,7 @@ final class AppState: ObservableObject {
     }
 
     private var session: CloudSession?
-    private var activity: Activity<LuminaAttributes>?
+    private let box = ActivityBox()
     private var poll: Timer?
     /// 上次发验证码时，服务端回的「是不是老用户」——
     /// 校验时不能再发一次（一分钟只能发一条，会触发限流）
@@ -318,31 +344,22 @@ final class AppState: ObservableObject {
 
     func startActivity() {
         guard liveActivityOn else { return }
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        guard activity == nil else { return }
-        let st = LuminaAttributes.ContentState(status: "待命", detail: "打开 Lumina 看消息",
-                                               unread: 0, pending: 0, updatedAt: Date())
-        activity = try? Activity<LuminaAttributes>.request(
-            attributes: LuminaAttributes(),
-            content: ActivityContent(state: st, staleDate: nil),
-            pushType: nil)
+        box.start()
     }
 
     func pushActivity() async {
         guard liveActivityOn else { await stopActivity(); return }
-        if activity == nil { startActivity() }
-        guard let a = activity else { return }
+        box.start()
         let unread = conversations.reduce(0) { $0 + ($1.unread ?? 0) }
         let pending = commands.filter { ($0.status ?? "") == "pending" }.count
         let s = statusSummary()
         let st = LuminaAttributes.ContentState(status: s.0, detail: s.1, unread: unread,
                                                pending: pending, updatedAt: Date())
-        await a.update(ActivityContent(state: st, staleDate: Date().addingTimeInterval(900)))
+        await box.update(st)
     }
 
     func stopActivity() async {
-        await activity?.end(nil, dismissalPolicy: .immediate)
-        activity = nil
+        await box.stop()
     }
 
     private func statusSummary() -> (String, String) {

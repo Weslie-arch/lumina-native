@@ -1,5 +1,26 @@
 import SwiftUI
 
+/// 倒计时放这里，是为了避开 Swift 6 的并发检查：
+/// Timer 的闭包是非隔离的，直接改 View 的 @State 会被判成 data race。
+@MainActor
+final class Countdown: ObservableObject {
+    @Published var value = 0
+    private var timer: Timer?
+
+    func start(seconds: Int) {
+        value = seconds
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.value > 1 { self.value -= 1 } else { self.stop() }
+            }
+        }
+    }
+
+    func stop() { timer?.invalidate(); timer = nil; value = 0 }
+}
+
 struct AuthView: View {
     @EnvironmentObject var state: AppState
     @State private var mode = 0            // 0 验证码 / 1 密码
@@ -8,8 +29,7 @@ struct AuthView: View {
     @State private var code = ""
     @State private var invite = ""
     @State private var vid: String?
-    @State private var countdown = 0
-    @State private var timer: Timer?
+    @StateObject private var ticker = Countdown()
 
     var body: some View {
         ZStack {
@@ -89,9 +109,9 @@ struct AuthView: View {
             }
 
             if mode == 0 && vid != nil {
-                Button(countdown > 0 ? "\(countdown) 秒后重发" : "重新发送验证码") { sendCode() }
+                Button(ticker.value > 0 ? "\(ticker.value) 秒后重发" : "重新发送验证码") { sendCode() }
                     .font(.footnote)
-                    .disabled(countdown > 0)
+                    .disabled(ticker.value > 0)
             }
         }
         .padding(20)
@@ -141,16 +161,8 @@ struct AuthView: View {
 
     private func resetFlow() { vid = nil; code = ""; stopTimer() }
 
-    private func startCountdown() {
-        countdown = 60
-        stopTimer()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { t in
-            Task { @MainActor in
-                if countdown > 1 { countdown -= 1 } else { countdown = 0; t.invalidate() }
-            }
-        }
-    }
-    private func stopTimer() { timer?.invalidate(); timer = nil; countdown = 0 }
+    private func startCountdown() { ticker.start(seconds: 60) }
+    private func stopTimer() { ticker.stop() }
 }
 
 /// 毛玻璃输入框
