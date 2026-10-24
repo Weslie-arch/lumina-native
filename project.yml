@@ -23,6 +23,7 @@ targets:
     sources:
       - Lumina
     info:
+      path: Lumina/Info.plist
       properties:
         CFBundleDisplayName: Lumina
         NSSupportsLiveActivities: true
@@ -48,6 +49,7 @@ targets:
       - LuminaActivityWidget
       - Lumina/LiveActivity
     info:
+      path: LuminaActivityWidget/Info.plist
       properties:
         CFBundleDisplayName: Lumina 实时活动
         NSSupportsLiveActivities: true
