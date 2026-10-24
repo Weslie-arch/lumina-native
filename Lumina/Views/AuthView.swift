@@ -21,36 +21,45 @@ final class Countdown: ObservableObject {
     func stop() { timer?.invalidate(); timer = nil; value = 0 }
 }
 
+// MARK: - 外壳：只负责在「登录」和「注册」之间切换
+
 struct AuthView: View {
     @EnvironmentObject var state: AppState
-    @State private var mode = 0            // 0 验证码 / 1 密码
-    @State private var email = ""
-    @State private var password = ""
-    @State private var code = ""
-    @State private var invite = ""
-    @State private var vid: String?
-    @StateObject private var ticker = Countdown()
+    @State private var isRegister = false
 
     var body: some View {
         ZStack {
             AppBackground()
             ScrollView {
-                VStack(spacing: 22) {
+                VStack(spacing: 20) {
                     brand
-                    card
+
+                    Picker("", selection: $isRegister) {
+                        Text("登录").tag(false)
+                        Text("注册").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 4)
+
+                    // 两个 pane 各自持有状态，一切换旧的就被销毁，不会串味
+                    if isRegister { RegisterPane() } else { LoginPane() }
+
                     if let b = state.banner {
-                        Text(b).font(.footnote).foregroundStyle(.red)
+                        Text(b)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal)
+                            .padding(.horizontal, 8)
                     }
                 }
                 .padding(.horizontal, 22)
-                .padding(.top, 70)
+                .padding(.top, 64)
                 .padding(.bottom, 40)
             }
             .scrollDismissesKeyboard(.interactively)
         }
         .ignoresSafeArea()
+        .onChange(of: isRegister) { _, _ in state.banner = nil }
     }
 
     private var brand: some View {
@@ -59,110 +68,186 @@ struct AuthView: View {
                 .font(.system(size: 40, weight: .bold, design: .rounded))
                 .foregroundStyle(LinearGradient(colors: [.indigo, .purple],
                                                 startPoint: .leading, endPoint: .trailing))
-            Text("只有聊天，没有别的")
+            Text(isRegister ? "创建一个新账号" : "欢迎回来")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
     }
+}
 
-    private var card: some View {
-        VStack(spacing: 16) {
-            Picker("", selection: $mode) {
-                Text("验证码").tag(0)
-                Text("密码").tag(1)
-            }
-            .pickerStyle(.segmented)
-            .onChange(of: mode) { _, _ in resetFlow() }
+// MARK: - 登录（老用户：邮箱 → 验证码 → 进入）
+
+struct LoginPane: View {
+    @EnvironmentObject var state: AppState
+    @State private var email = ""
+    @State private var code = ""
+    @State private var vid: String?
+    @StateObject private var ticker = Countdown()
+
+    var body: some View {
+        AuthCard {
+            Text("用邮箱验证码登录")
+                .font(.system(size: 15, weight: .semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             GlassField(title: "邮箱", text: $email, keyboard: .emailAddress)
+                .disabled(vid != nil)
+                .opacity(vid != nil ? 0.55 : 1)
 
-            if mode == 1 {
-                GlassField(title: "密码", text: $password, secure: true)
-            }
-
-            if mode == 0 && vid == nil {
-                GlassField(title: "邀请码", text: $invite)
-            }
-
-            if mode == 0 && vid != nil {
+            if vid != nil {
                 GlassField(title: "6 位验证码", text: $code, keyboard: .numberPad)
-                if mode == 0 {
-                    GlassField(title: "设置密码（可选）", text: $password, secure: true)
-                }
             }
 
             if state.working {
                 ProgressView().controlSize(.large).frame(height: 52)
             } else {
-                Button(action: mainAction) {
-                    Text(mainTitle)
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 52)
-                        .foregroundStyle(.white)
-                        .background(LinearGradient(colors: [.indigo, .purple],
-                                                   startPoint: .leading, endPoint: .trailing))
-                        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-                }
-                .disabled(!canGo)
-                .opacity(canGo ? 1 : 0.5)
+                AuthButton(title: vid == nil ? "发送验证码" : "登录", enabled: canGo, action: mainAction)
             }
 
-            if mode == 0 && vid != nil {
-                Button(ticker.value > 0 ? "\(ticker.value) 秒后重发" : "重新发送验证码") { sendCode() }
+            if vid != nil {
+                Button(ticker.value > 0 ? "\(ticker.value) 秒后重发" : "重新发送验证码") { send() }
                     .font(.footnote)
                     .disabled(ticker.value > 0)
             }
         }
-        .padding(20)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.35), lineWidth: 1)
-        )
-    }
-
-    private var mainTitle: String {
-        if mode == 1 { return "登录 / 注册" }
-        return vid == nil ? "发送验证码" : "验证并进入"
     }
 
     private var canGo: Bool {
-        let ok = email.contains("@")
-        if mode == 1 { return ok && password.count >= 6 }
-        if vid == nil { return ok && invite.uppercased() == Cloud.inviteCode }
-        return code.count == 6
+        guard email.contains("@") else { return false }
+        return vid == nil ? true : code.count >= 4
     }
 
     private func mainAction() {
-        if mode == 1 {
-            Task { await state.signIn(email: email, password: password) }
-            return
-        }
-        if vid == nil { sendCode() } else {
-            guard let v = vid else { return }
-            Task {
-                let ok = await state.verifyCode(email: email, vid: v, code: code, password: password)
-                if ok { stopTimer() }
-            }
-        }
+        if vid == nil { send() } else { verify() }
     }
 
-    private func sendCode() {
-        guard email.contains("@") else { return }
+    private func send() {
         Task {
-            if let v = await state.sendCode(email: email) {
+            if let v = await state.loginSendCode(email: email) {
                 vid = v
                 code = ""
-                startCountdown()
+                ticker.start(seconds: 60)
             }
         }
     }
 
-    private func resetFlow() { vid = nil; code = ""; stopTimer() }
+    private func verify() {
+        guard let v = vid else { return }
+        Task {
+            let ok = await state.loginVerify(email: email, vid: v, code: code)
+            if ok { ticker.stop() } else { code = "" }
+        }
+    }
+}
 
-    private func startCountdown() { ticker.start(seconds: 60) }
-    private func stopTimer() { ticker.stop() }
+// MARK: - 注册（新用户：邮箱 + 邀请码 → 验证码 + 密码 → 建号）
+
+struct RegisterPane: View {
+    @EnvironmentObject var state: AppState
+    @State private var email = ""
+    @State private var invite = ""
+    @State private var code = ""
+    @State private var password = ""
+    @State private var vid: String?
+    @StateObject private var ticker = Countdown()
+
+    var body: some View {
+        AuthCard {
+            Text("创建 Lumina 账号")
+                .font(.system(size: 15, weight: .semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            GlassField(title: "邮箱", text: $email, keyboard: .emailAddress)
+                .disabled(vid != nil)
+                .opacity(vid != nil ? 0.55 : 1)
+
+            if vid == nil {
+                GlassField(title: "邀请码", text: $invite)
+            } else {
+                GlassField(title: "6 位验证码", text: $code, keyboard: .numberPad)
+                GlassField(title: "设置密码（至少 6 位）", text: $password, secure: true)
+            }
+
+            if state.working {
+                ProgressView().controlSize(.large).frame(height: 52)
+            } else {
+                AuthButton(title: vid == nil ? "发送验证码" : "创建账号",
+                           enabled: canGo, action: mainAction)
+            }
+
+            if vid != nil {
+                Button(ticker.value > 0 ? "\(ticker.value) 秒后重发" : "重新发送验证码") { send() }
+                    .font(.footnote)
+                    .disabled(ticker.value > 0)
+            }
+        }
+    }
+
+    private var canGo: Bool {
+        guard email.contains("@") else { return false }
+        if vid == nil { return invite.uppercased() == Cloud.inviteCode }
+        return code.count >= 4 && password.count >= 6
+    }
+
+    private func mainAction() {
+        if vid == nil { send() } else { create() }
+    }
+
+    private func send() {
+        Task {
+            if let v = await state.registerSendCode(email: email) {
+                vid = v
+                code = ""
+                ticker.start(seconds: 60)
+            }
+        }
+    }
+
+    private func create() {
+        guard let v = vid else { return }
+        Task {
+            let ok = await state.registerVerify(email: email, vid: v,
+                                                code: code, password: password)
+            if ok { ticker.stop() } else { code = "" }
+        }
+    }
+}
+
+// MARK: - 共用零件
+
+struct AuthCard<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(spacing: 15) { content }
+            .padding(20)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.35), lineWidth: 1)
+            )
+    }
+}
+
+struct AuthButton: View {
+    var title: String
+    var enabled: Bool
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 16, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .foregroundStyle(.white)
+                .background(LinearGradient(colors: [.indigo, .purple],
+                                           startPoint: .leading, endPoint: .trailing))
+                .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        }
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+    }
 }
 
 /// 毛玻璃输入框
@@ -184,7 +269,8 @@ struct GlassField: View {
             .autocorrectionDisabled()
             .padding(.horizontal, 14)
             .frame(height: 46)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .background(Color(.secondarySystemBackground),
+                        in: RoundedRectangle(cornerRadius: 13, style: .continuous))
         }
     }
 }

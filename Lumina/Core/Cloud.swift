@@ -10,8 +10,12 @@ struct CloudError: LocalizedError {
 /// database: {endpoint}/.cloud/database/rest/*  (PostgREST)
 enum Cloud {
     static let endpoint = "https://pure-chat.app.workbuddy.host"
+    static let host = "pure-chat.app.workbuddy.host"
     static let accessKey = "wbpk_GZUkcmIYUOHrSs1BhFAw2G_uCthzsGdVnB9HJgkkhQm7mA471l7RcY9"
     static let inviteCode = "LUMINA2026"
+    static let userAgent =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 "
+        + "(KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1"
 
     static func auth(_ p: String) -> URL { URL(string: endpoint + "/.cloud/auth" + p)! }
     static func db(_ p: String) -> URL { URL(string: endpoint + "/.cloud/database/rest/" + p)! }
@@ -26,6 +30,16 @@ enum Cloud {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(accessKey, forHTTPHeaderField: "x-wb-webapp-access-key")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        // 服务端签发令牌时会校验「客户端上下文」，缺了这些浏览器自带的头
+        // 就会回 401 the session is invalid, expired or issued for another client
+        req.setValue("https://\(host)", forHTTPHeaderField: "Origin")
+        req.setValue("https://\(host)/", forHTTPHeaderField: "Referer")
+        req.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        req.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
+        req.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
+        req.setValue("cors", forHTTPHeaderField: "Sec-Fetch-Mode")
+
         if let t = token, !t.isEmpty {
             req.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
         }

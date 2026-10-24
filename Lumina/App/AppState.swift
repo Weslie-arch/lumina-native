@@ -49,9 +49,6 @@ final class AppState: ObservableObject {
     private var session: CloudSession?
     private let box = ActivityBox()
     private var poll: Timer?
-    /// 上次发验证码时，服务端回的「是不是老用户」——
-    /// 校验时不能再发一次（一分钟只能发一条，会触发限流）
-    private var otpIsUser = false
 
     init() {
         liveActivityOn = UserDefaults.standard.object(forKey: "lumina_live") as? Bool ?? true
@@ -144,13 +141,13 @@ final class AppState: ObservableObject {
         working = false
     }
 
-    /// 走验证码：先发码，拿到 id 后校验，老用户直接登、新用户注册
-    func sendCode(email: String) async -> String? {
+    /// 发验证码。注意：服务端不返回 is_user，所以没法靠它判断新老用户，
+    /// 只能让「登录」和「注册」走各自明确的接口（见下面两个方法）。
+    private func otp(email: String) async -> String? {
         working = true; banner = nil
         defer { working = false }
         do {
-            let (vid, isUser) = try await Cloud.sendOtp(email: email)
-            otpIsUser = isUser
+            let (vid, _) = try await Cloud.sendOtp(email: email)
             return vid
         } catch {
             banner = error.localizedDescription
@@ -158,31 +155,80 @@ final class AppState: ObservableObject {
         }
     }
 
-    func verifyCode(email: String, vid: String, code: String, password: String) async -> Bool {
+    /// 登录页发码。服务端只在「这个邮箱已注册」时回 is_user=true，
+    /// 拿不到就温和提醒一句，但不拦着——万一是字段没返回，还能继续试。
+    func loginSendCode(email: String) async -> String? {
+        working = true; banner = nil
+        defer { working = false }
+        do {
+            let (vid, isUser) = try await Cloud.sendOtp(email: email)
+            if !isUser {
+                banner = "这个邮箱看起来还没注册过，若登录失败请改用「注册」"
+            }
+            return vid
+        } catch {
+            banner = error.localizedDescription
+            return nil
+        }
+    }
+
+    func registerSendCode(email: String) async -> String? { await otp(email: email) }
+
+    private func finish(_ s: CloudSession, email: String) async {
+        var c = s
+        if c.email.isEmpty { c.email = email }
+        adopt(c)
+        startPolling()
+        await refreshAll()
+    }
+
+    /// 登录：验证码 → signin（老用户专用接口）
+    func loginVerify(email: String, vid: String, code: String) async -> Bool {
         working = true; banner = nil
         defer { working = false }
         do {
             let vt = try await Cloud.verifyOtp(vid: vid, code: code)
-            var s: CloudSession
-            if otpIsUser {
-                s = try await Cloud.signInWithToken(email: email, vt: vt)
-            } else {
-                let pw = password.isEmpty ? defaultPassword(for: email) : password
-                s = try await Cloud.signUp(email: email, password: pw, vt: vt)
-            }
-            if s.email.isEmpty { s.email = email }
-            adopt(s)
-            startPolling()
-            await refreshAll()
+            var s = try await Cloud.signInWithToken(email: email, vt: vt)
+            await finish(&s, email: email)
             return true
+        } catch let e as CloudError {
+            // 服务端把「用户不存在」和「令牌无效」都塞进同一句文案里，这里按关键词拆开给人话
+            if e.message.localizedCaseInsensitiveContains("not exist") {
+                banner = "这个邮箱还没注册过，切到「注册」建一个账号"
+            } else if e.message.localizedCaseInsensitiveContains("another client")
+                        || e.message.localizedCaseInsensitiveContains("invalid") {
+                banner = "登录没通过，重新发一次验证码再试"
+            } else {
+                banner = e.message
+            }
+            return false
         } catch {
             banner = error.localizedDescription
             return false
         }
     }
 
-    private func defaultPassword(for email: String) -> String {
-        "Lm#" + String(email.prefix(6)) + "2026"
+    /// 注册：验证码 → signup（新用户专用接口）
+    func registerVerify(email: String, vid: String, code: String, password: String) async -> Bool {
+        working = true; banner = nil
+        defer { working = false }
+        do {
+            let vt = try await Cloud.verifyOtp(vid: vid, code: code)
+            var s = try await Cloud.signUp(email: email, password: password, vt: vt)
+            await finish(&s, email: email)
+            return true
+        } catch let e as CloudError {
+            if e.message.localizedCaseInsensitiveContains("exist")
+                || e.message.localizedCaseInsensitiveContains("registered") {
+                banner = "这个邮箱已经注册过了，切到「登录」"
+            } else {
+                banner = e.message
+            }
+            return false
+        } catch {
+            banner = error.localizedDescription
+            return false
+        }
     }
 
     func signOut() { wipe() }
