@@ -188,8 +188,8 @@ final class AppState: ObservableObject {
         defer { working = false }
         do {
             let vt = try await Cloud.verifyOtp(vid: vid, code: code)
-            var s = try await Cloud.signInWithToken(email: email, vt: vt)
-            await finish(&s, email: email)
+            let s = try await Cloud.signInWithToken(email: email, vt: vt)
+            await finish(s, email: email)
             return true
         } catch let e as CloudError {
             // 服务端把「用户不存在」和「令牌无效」都塞进同一句文案里，这里按关键词拆开给人话
@@ -214,8 +214,8 @@ final class AppState: ObservableObject {
         defer { working = false }
         do {
             let vt = try await Cloud.verifyOtp(vid: vid, code: code)
-            var s = try await Cloud.signUp(email: email, password: password, vt: vt)
-            await finish(&s, email: email)
+            let s = try await Cloud.signUp(email: email, password: password, vt: vt)
+            await finish(s, email: email)
             return true
         } catch let e as CloudError {
             if e.message.localizedCaseInsensitiveContains("exist")
