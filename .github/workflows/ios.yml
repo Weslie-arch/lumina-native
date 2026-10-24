@@ -1,0 +1,60 @@
+name: Build Lumina IPA (unsigned)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    # macos-26 = Xcode 26.5 + iOS 26 SDK（液态玻璃需要）
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: |
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (unsigned, iPhone)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Lumina.xcodeproj \
+            -scheme Lumina \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tail -60
+
+      - name: Package IPA
+        run: |
+          APP="build/Build/Products/Release-iphoneos/Lumina.app"
+          test -d "$APP" || { echo "app bundle missing"; exit 1; }
+          rm -rf Payload Lumina-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          # 插件目录里的多余内容会拖垮体积，保留 PlugIns（实时活动要用）
+          zip -qry Lumina-unsigned.ipa Payload
+          ls -lh Lumina-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lumina-unsigned-ipa
+          path: Lumina-unsigned.ipa
+          retention-days: 30
